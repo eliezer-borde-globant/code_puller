@@ -72,63 +72,28 @@ def download_repo(repo_name, repo_url, token):
 
 
 def git_operations(repo_name, repo_dir, repo_url, token):
-    branch_name = f"{repo_name}_secrets_branch_11"
+    owner_and_repo = repo_url.split('.com/')[1].replace(".git", '')
+    branch_name = f"{repo_name}_secrets_branch_23"
     git = repo_dir.git
-    git.checkout(repo_dir.active_branch.name, b=branch_name)
+    base_branch = repo_dir.active_branch.name
+    git.checkout(base_branch, b=branch_name)
     git.add(".secrets.baseline")
     git.commit("-m", "feat: secrets file added")
     git.push("--set-upstream", "origin", branch_name)
     #
-    # g = Github(token)
-    # repo = g.get_repo('leonardo-orozco-globant/lemanga')
-    # body = "Test"
+    g = Github(token)
+    repo = g.get_repo(str(owner_and_repo))
+    body = "Test"
 
-    create_pull_request(
-        "leonardo-orozco-globant",  # project_name
-        "lemanga",  # repo_name
-        "Test",  # title
-        "My pull request description",  # description
-        branch_name,  # head_branch
-        repo_dir.active_branch.name,  # base_branch
-        token,  # git_token
+    repo.create_pull(
+        title="test",
+        body=body,
+        head=branch_name,
+        base=base_branch
     )
-    # repo.create_pull(
-    #     title="test",
-    #     body=body,
-    #     head=branch_name,
-    #     base=repo_dir.active_branch.name
-    # )
 
-def create_pull_request(project_name, repo_name, title, description, head_branch, base_branch, git_token):
-    """Creates the pull request for the head_branch against the base_branch"""
-    git_pulls_api = "https://github.com/api/v3/repos/{0}/{1}/pulls".format(
-        project_name,
-        repo_name)
-    headers = {
-        "Authorization": "token {0}".format(git_token),
-        "Content-Type": "application/json"}
-
-    payload = {
-        "title": title,
-        "body": description,
-        "head": head_branch,
-        "base": base_branch,
-    }
-
-    s = requests.Session()
-    res = s.get(git_pulls_api)
-    cookies = dict(res.cookies)
-
-    r = s.post(
-        git_pulls_api,
-        headers=headers,
-        data=json.dumps(payload), cookies=cookies)
-
-    if not r.ok:
-        print("Request Failed: {0}".format(r.text))
-
-
-
+org_name = ""
+auth_token = ""
 
 # pprint.pprint(get_org_repo(org_name, auth_token))
 download_repo('lemanga', 'https://github.com/eliezer-borde-globant/lemanga.git', auth_token)
