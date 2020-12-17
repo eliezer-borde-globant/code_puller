@@ -4,7 +4,11 @@ from detect_secrets.main import parse_args, build_automaton
 from detect_secrets.plugins.common import initialize
 from detect_secrets import util
 
-def scan(argv):
+
+def start_scan(path: str):
+    return _scan(argv=["scan", path, "--all-files"])
+
+def _scan(argv):
     args = parse_args(argv)
     automaton = None
     word_list_hash = None
@@ -20,7 +24,7 @@ def scan(argv):
         automaton=automaton,
         should_verify_secrets=not args.no_verify,
     )
-    return baseline.initialize(
+    init_data = baseline.initialize(
         path=args.path,
         plugins=plugins,
         custom_plugin_paths=args.custom_plugin_paths,
@@ -30,8 +34,19 @@ def scan(argv):
         word_list_hash=word_list_hash,
         should_scan_all_files=args.all_files,
     )
+    baseline_dict = init_data.format_for_baseline_output()
+    results = {}
+    for key, value in baseline_dict['results'].items():
+        new_key = key.replace(f'{argv[1]}/', '')
+        results[new_key] = value
 
-def get_path_if_in_root(root, filepath):
+    baseline_dict['results'] = results
+    return baseline.format_baseline_for_output(
+        baseline_dict,
+    )
+
+
+def _get_path_if_in_root(root, filepath):
     filepath = os.path.realpath(
         os.path.join(root, filepath),
     )
@@ -40,4 +55,4 @@ def get_path_if_in_root(root, filepath):
     return None
 
 
-util.get_relative_path_if_in_cwd = get_path_if_in_root
+util.get_relative_path_if_in_cwd = _get_path_if_in_root
