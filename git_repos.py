@@ -9,6 +9,8 @@ from github import Github
 
 from detects import start_scan
 
+import uuid
+
 logger = logging.getLogger(__file__)
 
 # create console handler and set level to debug
@@ -25,7 +27,7 @@ def get_org_repo(org_name, auth_token):
     page_number = 1
     repos = []
 
-    logger.info(f"scanning for organization {org_name}")
+    logger.info(f"Scanning repos for organization {org_name}")
     while True:
         logger.info(f"URL: https://api.github.com/orgs/{org_name}/repos?page={page_number}&per_page=100")
         response = requests.get(f"https://api.github.com/orgs/{org_name}/repos?page={page_number}&per_page=100",
@@ -58,42 +60,48 @@ def secret_file_exists(org_name, repo_name, auth_token):
 
 
 def download_repo(repo_name, repo_url, token):
+    logger.info(f"Trying to download repo - {repo_name} from {repo_url}")
     repo = repo_url.replace("github.com", f"{token}@github.com")
-    # deleting if folder exists
-    dirpath = os.path.join('repos', f'{repo_name}')
-    if os.path.exists(dirpath) and os.path.isdir(dirpath):
-        shutil.rmtree(dirpath)
     repo_dir = Repo.clone_from(repo, f'repos/{repo_name}')
+    logger.info(f"Starting to scan {repo_name}")
     secrets_text = start_scan(repo_dir.working_dir)
     with open(f'{repo_dir.working_dir}/.secrets.baseline', 'w') as secrets_file:
+        logger.info(f"Creating .secrets.baseline file for {repo_name}")
         secrets_file.write(secrets_text)
 
     git_operations(repo_name, repo_dir, repo_url, token)
 
 
 def git_operations(repo_name, repo_dir, repo_url, token):
+
     owner_and_repo = repo_url.split('.com/')[1].replace(".git", '')
-    branch_name = f"{repo_name}_secrets_branch_23"
+    branch_name = f"{repo_name}_secrets_branch_{uuid.uuid1()}"
     git = repo_dir.git
     base_branch = repo_dir.active_branch.name
     git.checkout(base_branch, b=branch_name)
     git.add(".secrets.baseline")
+    logger.info(f"Creating commit to branch name {branch_name} in {repo_name}")
     git.commit("-m", "feat: secrets file added")
+    logger.info(f"Pushing commit to branch name {branch_name} in {repo_name}")
     git.push("--set-upstream", "origin", branch_name)
-    #
     g = Github(token)
-    repo = g.get_repo(str(owner_and_repo))
-    body = "Test"
-
+    repo = g.get_repo(owner_and_repo)
+    body = f"Found secrets for {repo_name} and added to .secrets.baseline"
+    logger.info(f"Making PR for {branch_name} in {repo_name}")
     repo.create_pull(
-        title="test",
+        title=f"{repo_name}-.secrets.baseline Added",
         body=body,
         head=branch_name,
         base=base_branch
     )
+    logger.info(f"PR has been created in {repo_name}")
+    logger.info(f"Removing folder {repo_name}")
+    dirpath = os.path.join('repos', f'{repo_name}')
+    if os.path.exists(dirpath) and os.path.isdir(dirpath):
+        shutil.rmtree(dirpath)
 
-org_name = ""
+org_name = "felipe-hernandez-globant"
 auth_token = ""
 
 # pprint.pprint(get_org_repo(org_name, auth_token))
-download_repo('lemanga', 'https://github.com/eliezer-borde-globant/lemanga.git', auth_token)
+download_repo('lemanga', 'https://github.com/felipe-hernandez-globant/lemanga.git', auth_token)
