@@ -1,58 +1,127 @@
-import asyncio
-
+import requests
 import os
+import shutil
+import logging
 
-from aiohttp import web
+from git import Repo
+from github import Github
 
-from detects import scan
-from git_actions import init_repo
+from detects import start_scan
+
+import uuid
+
+import click
+
+from datetime import datetime
+
+logger = logging.getLogger(__file__)
+
+# create console handler and set level to debug
+ch = logging.StreamHandler()
+logger.setLevel(logging.DEBUG)
+# create formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# add formatter to ch
+ch.setFormatter(formatter)
+# add ch to logger
+logger.addHandler(ch)
 
 
-async def pull_code(request):
-    data = await request.json()
-    directory = f"/tmp/{data['name']}"
-    cmd = f"rm -rf {directory}"
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+def get_org_repo(organization, token, repos_to_download='all'):
+    page_number = 1
+    repos = []
+    logger.info(f"Scanning Repos in organization {organization}")
+    while True:
+        logger.info(f"Getting Repos from page {page_number} in {organization}")
+        logger.info(f"URL: https://api.github.com/orgs/{organization}/repos?page={page_number}&per_page=100")
+        response = requests.get(f"https://api.github.com/orgs/{organization}/repos?page={page_number}&per_page=100",
+                                headers={
+                                    'Authorization': f'token {token}'
+                                })
+        logger.info(f"Response from URL - {response.status_code}")
+        repos += response.json()
+        page_number += 1
+        if len(response.json()) == 0:
+            break
+    return {repo['name']: repo['clone_url'] for repo in repos if
+            secret_file_exists(organization, repo['name'], token, repos_to_download) == 404}
+
+
+def secret_file_exists(organization, repo, token, repos_to_download):
+    if repos_to_download and (repo in repos_to_download or repos_to_download=='all'):
+            logger.info(f"Checking [.secrets.baseline] file in the repo with URL - "
+                        f"https://api.github.com/repos/{organization}/{repo}/contents/.secrets.baseline")
+            response = requests.get(f"https://api.github.com/repos/{organization}/{repo}/contents/.secrets.baseline",
+                                    headers={
+                                        'Authorization': f'token {token}'
+                                    }
+                                    )
+            if response.status_code == 200:
+                logger.info(f".secrets.baseline file exists for repo - {organization}/{repo}")
+            elif response.status_code == 404:
+                logger.info(f"[.secrets.baseline] file does not exists for repo - {organization}/{repo}")
+            else:
+                logger.error(f"Error Occurred: [Response status - {response.status_code} for {organization}/{repo}]")
+
+            return response.status_code
+
+
+def download_repo_and_create_secret_file(repo_name, repo_url, token):
+    logger.info(f"Trying to download repo - {repo_name} from {repo_url}")
+    repo = repo_url.replace("github.com", f"{token}@github.com")
+    directory = os.path.join('repos', f'{repo_name}')
+
+    logger.info(f"Deleting if folder exists in {directory}")
+    if os.path.exists(directory) and os.path.isdir(directory):
+        shutil.rmtree(directory)
+
+    repo_dir = Repo.clone_from(repo, f'repos/{repo_name}')
+    logger.info(f"Starting to scan {repo_name}")
+    secrets_text = start_scan(repo_dir.working_dir)
+    with open(f'{repo_dir.working_dir}/.secrets.baseline', 'w') as secrets_file:
+        logger.info(f"Creating .secrets.baseline file for {repo_name}")
+        secrets_file.write(secrets_text)
+
+    git_operations(repo_name, repo_dir, repo_url, token)
+
+
+def git_operations(repo_name, repo_dir, repo_url, token):
+    owner_and_repo = repo_url.split('.com/')[1].replace(".git", '')
+    branch_name = f"secret_scanner_bot/{repo_name}/add/_secrets_baseline"
+    git = repo_dir.git
+    base_branch = repo_dir.active_branch.name
+    result = git.ls_remote("--heads", "origin", branch_name)
+    if result:
+        logger.info(f"This branch: {branch_name} already existis in repo: {repo_name}")
+        return
+    logger.info(f"Result ls_remote : {result}")
+    git.checkout(base_branch, b=branch_name)
+    git.add(".secrets.baseline")
+    logger.info(f"Creating commit to branch name {branch_name} in {repo_name}")
+    git.commit("-m", "chord: Secrets file added")
+    logger.info(f"Pushing commit to branch name {branch_name} in {repo_name}")
+    git.push("--set-upstream", "origin", branch_name)
+    g = Github(token)
+    repo = g.get_repo(owner_and_repo)
+    body = f"Found secrets for {repo_name} and added to .secrets.baseline"
+    logger.info(f"Making PR for {branch_name} in {repo_name}")
+    repo.create_pull(
+        title=f"[SRE-396] {repo_name}-.secrets.baseline file added",
+        body=body,
+        head=branch_name,
+        base=base_branch
     )
+    logger.info(f"PR has been created in {repo_name}")
 
-    stdout, stderr = await proc.communicate()
-    print(f'[{cmd!r} exited with {proc.returncode}]')
-    if stdout:
-        print(f'[stdout]\n{stdout.decode()}')
-    if stderr:
-        print(f'[stderr]\n{stderr.decode()}')
-    print("remove finish")
+@click.command()
+@click.option('--organization', envvar="ORGANIZATION")
+@click.option('--token', envvar="TOKEN")
+def main(organization, token):
+    repos = get_org_repo(organization, token)
 
-    url = data["url"]
-    cmd = f"git clone {url} {directory}"
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-
-    stdout, stderr = await proc.communicate()
-    print(f'[{cmd!r} exited with {proc.returncode}]')
-    if stdout:
-        print(f'[stdout]\n{stdout.decode()}')
-    if stderr:
-        print(f'[stderr]\n{stderr.decode()}')
-    print("git finish")
-    dts = scan(argv=["scan", directory, "--all-files"])
-    init_repo(directory, dts)
-    return web.json_response({})
+    for key, value in repos.items():
+        download_repo_and_create_secret_file(key, value, token)
 
 
-app = web.Application()
-app.router.add_post("/code", pull_code)
-
-
-if __name__ == "__main__":
-    
-    port = os.environ.get("PORT", 9000)
-    if port is not None:
-        port = int(port)
-    web.run_app(app, port=port)
+if __name__ == '__main__':
+    main()
